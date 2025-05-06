@@ -20,6 +20,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -31,6 +32,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	clientsetscheme "k8s.io/client-go/kubernetes/scheme"
 
@@ -66,7 +68,7 @@ import (
 
 // Constants for the shared Gateway
 const (
-	SharedGatewayName      = "gateway-conformance-app"   // Name of the Gateway in manifests.yaml
+	SharedGatewayName      = "conformance-gateway"       // Name of the Gateway in manifests.yaml
 	SharedGatewayNamespace = "gateway-conformance-infra" // Namespace of the Gateway
 )
 
@@ -97,15 +99,15 @@ func DefaultOptions(t *testing.T) confsuite.ConformanceOptions {
 	scheme := runtime.NewScheme()
 
 	t.Log("Registering API types with scheme...")
-	// Add core Kubernetes types (like Secret, Service, etc.) to the scheme
-	require.NoError(t, clientsetscheme.AddToScheme(scheme), "Failed to add core Kubernetes types to scheme") // CORE FIX
+	// Register core K8s types (like v1.Secret for certs) to scheme, needed by client to create/manage these resources.
+	require.NoError(t, clientsetscheme.AddToScheme(scheme), "Failed to add core Kubernetes types to scheme")
 	// Add Gateway API types
 	require.NoError(t, gatewayv1.Install(scheme), "Failed to install gatewayv1 types into scheme")
 	// Add APIExtensions types (for CRDs)
 	require.NoError(t, apiextensionsv1.AddToScheme(scheme), "Failed to add apiextensionsv1 types to scheme")
 
 	// Register Inference Extension API types
-	t.Logf("Attempting to install inferencev1alpha2 types (like InferencePool) into scheme from package: %s", inferencev1alpha2.GroupName)
+	t.Logf("Attempting to install inferencev1alpha2 types into scheme from package: %s", inferencev1alpha2.GroupName)
 	require.NoError(t, inferencev1alpha2.Install(scheme), "Failed to install inferencev1alpha2 types into scheme.")
 
 	clientOptions := client.Options{Scheme: scheme}
@@ -134,7 +136,6 @@ func DefaultOptions(t *testing.T) confsuite.ConformanceOptions {
 	_ = inferenceExtensionVersion // Avoid unused variable error until implemented
 
 	baseManifestsValue := "resources/manifests/manifests.yaml"
-	t.Logf("Explicitly setting BaseManifests path to: %q", baseManifestsValue)
 
 	opts := confsuite.ConformanceOptions{
 		Client:               c,
@@ -165,17 +166,25 @@ func DefaultOptions(t *testing.T) confsuite.ConformanceOptions {
 	// Populate SupportedFeatures based on the GatewayLayerProfile.
 	// Since all features are mandatory for this profile, add all defined core features.
 	if opts.ConformanceProfiles.Has(GatewayLayerProfileName) {
-		t.Logf("CONFORMANCE.GO: Populating SupportedFeatures from GatewayLayerProfile.CoreFeatures (%v)", GatewayLayerProfile.CoreFeatures.UnsortedList())
-		for feature := range GatewayLayerProfile.CoreFeatures {
-			opts.SupportedFeatures.Insert(feature)
+		if opts.Debug {
+			t.Logf("Populating SupportedFeatures with GatewayLayerProfile.CoreFeatures: %v", GatewayLayerProfile.CoreFeatures.UnsortedList())
+		}
+		if GatewayLayerProfile.CoreFeatures.Len() > 0 {
+			opts.SupportedFeatures = opts.SupportedFeatures.Insert(GatewayLayerProfile.CoreFeatures.UnsortedList()...)
 		}
 	}
 
 	// Remove any features explicitly exempted via flags.
-	for feature := range opts.ExemptFeatures {
-		opts.SupportedFeatures.Delete(feature)
+	if opts.ExemptFeatures.Len() > 0 {
+		if opts.Debug {
+			t.Logf("Removing ExemptFeatures from SupportedFeatures: %v", opts.ExemptFeatures.UnsortedList())
+		}
+		opts.SupportedFeatures = opts.SupportedFeatures.Delete(opts.ExemptFeatures.UnsortedList()...)
 	}
-	t.Logf("CONFORMANCE.GO: Final opts.SupportedFeatures: %v", opts.SupportedFeatures.UnsortedList())
+
+	if opts.Debug {
+		t.Logf("Final opts.SupportedFeatures: %v", opts.SupportedFeatures.UnsortedList())
+	}
 
 	return opts
 }
@@ -188,7 +197,9 @@ func RunConformance(t *testing.T) {
 // RunConformanceWithOptions runs the Inference Extension conformance tests with specific options.
 func RunConformanceWithOptions(t *testing.T, opts confsuite.ConformanceOptions) {
 	t.Logf("Running Inference Extension conformance tests with GatewayClass %s", opts.GatewayClassName)
-	t.Logf("CONFORMANCE.GO RunConformanceWithOptions: BaseManifests path being used by opts: %q", opts.BaseManifests)
+	if opts.Debug {
+		t.Logf("CONFORMANCE.GO RunConformanceWithOptions: BaseManifests path being used by opts: %q", opts.BaseManifests)
+	}
 
 	// Register the GatewayLayerProfile with the suite runner.
 	// In the future, other profiles (EPP, ModelServer) will also be registered here,
@@ -199,35 +210,60 @@ func RunConformanceWithOptions(t *testing.T, opts confsuite.ConformanceOptions) 
 	cSuite, err := confsuite.NewConformanceTestSuite(opts)
 	require.NoError(t, err, "error initializing conformance suite")
 
-	t.Log("Setting up Inference Extension conformance tests (applying base manifests via cSuite.Setup)")
 	cSuite.Setup(t, tests.ConformanceTests)
 
 	// TODO: Move gateway setup validation to a helper method.
-	t.Logf("CONFORMANCE.GO: Attempting to fetch Gateway %s/%s after cSuite.Setup().", SharedGatewayNamespace, SharedGatewayName)
+	t.Logf("Attempting to fetch Gateway %s/%s after cSuite.Setup().", SharedGatewayNamespace, SharedGatewayName)
 	sharedGwNN := types.NamespacedName{Name: SharedGatewayName, Namespace: SharedGatewayNamespace}
-	t.Logf("Attempting to directly fetch Gateway %s/%s after cSuite.Setup()", sharedGwNN.Namespace, sharedGwNN.Name)
-	gw := &gatewayv1.Gateway{}
-	var getErr error
-	// TODO: Confirm what is a reasonable wait time here.
-	maxRetries := 10
-	for i := 0; i < maxRetries; i++ {
-		getErr = cSuite.Client.Get(context.TODO(), sharedGwNN, gw)
-		if getErr == nil {
-			t.Logf("CONFORMANCE.GO: Successfully fetched Gateway %s/%s. Spec.GatewayClassName: %s",
-				sharedGwNN.Namespace, sharedGwNN.Name, gw.Spec.GatewayClassName)
-			break
-		}
-		if apierrors.IsNotFound(getErr) {
-			t.Logf("CONFORMANCE.GO: Gateway %s/%s not found (attempt %d/%d). Retrying in 1s...", sharedGwNN.Namespace, sharedGwNN.Name, i+1, maxRetries)
-			time.Sleep(1 * time.Second)
-		} else {
-			t.Logf("CONFORMANCE.GO: Error fetching Gateway %s/%s (attempt %d/%d): %v.", sharedGwNN.Namespace, sharedGwNN.Name, i+1, maxRetries, getErr)
-			break
-		}
-	}
-	require.NoErrorf(t, getErr, "Failed to fetch Gateway %s/%s after cSuite.Setup(), even after retries. It should have been created if the Applier worked with the correct manifest.", sharedGwNN.Namespace, sharedGwNN.Name)
+	gw := &gatewayv1.Gateway{} // This gw instance will be populated by the poll function
 
-	t.Logf("CONFORMANCE.GO: Waiting for shared Gateway %s/%s to be ready", SharedGatewayNamespace, SharedGatewayName)
+	// Define polling interval
+	// TODO: Make this configurable using a local TimeoutConfig.
+	pollingInterval := 5 * time.Second
+	// Use the GatewayMustHaveAddress timeout from the suite's TimeoutConfig for the Gateway object to appear
+	waitForGatewayCreationTimeout := opts.TimeoutConfig.GatewayMustHaveAddress
+
+	if opts.Debug {
+		t.Logf("Waiting up to %v for Gateway object %s/%s to appear after manifest application...", waitForGatewayCreationTimeout, SharedGatewayNamespace, SharedGatewayName)
+	}
+
+	ctx := context.TODO()
+	pollErr := wait.PollUntilContextTimeout(ctx, pollingInterval, waitForGatewayCreationTimeout, true, func(pollCtx context.Context) (bool, error) {
+		fetchErr := cSuite.Client.Get(pollCtx, sharedGwNN, gw)
+		if fetchErr == nil {
+			t.Logf("Successfully fetched Gateway %s/%s. Spec.GatewayClassName: %s",
+				gw.Namespace, gw.Name, gw.Spec.GatewayClassName)
+			return true, nil
+		}
+		if apierrors.IsNotFound(fetchErr) {
+			if opts.Debug {
+				t.Logf("Gateway %s/%s not found, still waiting...", sharedGwNN.Namespace, sharedGwNN.Name)
+			}
+			return false, nil // Not found, continue polling
+		}
+		// For any other error, stop polling and return this error
+		t.Logf("Error fetching Gateway %s/%s: %v. Halting polling for this attempt.", sharedGwNN.Namespace, sharedGwNN.Name, fetchErr)
+		return false, fetchErr
+	})
+
+	// Check if polling timed out or an error occurred during polling
+	if pollErr != nil {
+		var failureMessage string
+		if errors.Is(pollErr, context.DeadlineExceeded) {
+			failureMessage = fmt.Sprintf("Timed out after %v waiting for Gateway object %s/%s to appear in the API server.",
+				waitForGatewayCreationTimeout, SharedGatewayNamespace, SharedGatewayName)
+		} else {
+			failureMessage = fmt.Sprintf("Error while waiting for Gateway object %s/%s to appear: %v.",
+				SharedGatewayNamespace, SharedGatewayName, pollErr)
+		}
+		finalMessage := failureMessage + " The Gateway object should have been created by the base manifest application via cSuite.Setup()."
+		require.FailNow(t, finalMessage) // Use FailNow to stop if the Gateway isn't found.
+	}
+	// If pollErr is nil, the 'gw' variable is now populated with the fetched Gateway.
+
+	if opts.Debug {
+		t.Logf("Waiting for shared Gateway %s/%s to be ready", SharedGatewayNamespace, SharedGatewayName)
+	}
 	apikubernetes.GatewayMustHaveCondition(t, cSuite.Client, cSuite.TimeoutConfig, sharedGwNN, metav1.Condition{
 		Type:   string(gatewayv1.GatewayConditionAccepted),
 		Status: metav1.ConditionTrue,
@@ -238,7 +274,7 @@ func RunConformanceWithOptions(t *testing.T, opts confsuite.ConformanceOptions) 
 	})
 	_, err = apikubernetes.WaitForGatewayAddress(t, cSuite.Client, cSuite.TimeoutConfig, apikubernetes.NewGatewayRef(sharedGwNN))
 	require.NoErrorf(t, err, "shared gateway %s/%s did not get an address", SharedGatewayNamespace, SharedGatewayName)
-	t.Logf("CONFORMANCE.GO: Shared Gateway %s/%s is ready.", SharedGatewayNamespace, SharedGatewayName)
+	t.Logf("Shared Gateway %s/%s is ready.", SharedGatewayNamespace, SharedGatewayName)
 
 	t.Log("Running Inference Extension conformance tests against all registered tests")
 	err = cSuite.Run(t, tests.ConformanceTests)
