@@ -19,7 +19,6 @@ package basic
 import (
 	"context"
 	"testing"
-	"time" // Added for polling interval
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors" // Added for IsNotFound
@@ -63,7 +62,7 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, acceptedCondition)
 
 			createdPool := &inferenceapi.InferencePool{}
-			err := s.Client.Get(context.TODO(), poolNN, createdPool)
+			err := s.Client.Get(context.Background(), poolNN, createdPool)
 			require.NoErrorf(t, err, "Failed to get InferencePool %s/%s", poolNN.Namespace, poolNN.Name)
 
 			// Verify fields based on the current API (using .Spec.Selector)
@@ -79,31 +78,22 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 
 		t.Run("Step 3: Update InferencePool", func(t *testing.T) {
 			originalPool := &inferenceapi.InferencePool{}
-			err := s.Client.Get(context.TODO(), poolNN, originalPool)
+			err := s.Client.Get(context.Background(), poolNN, originalPool)
 			require.NoErrorf(t, err, "Failed to get InferencePool %s for update", poolNN.String())
 
 			updatedPool := originalPool.DeepCopy()
-			// Update based on the current API (using .Spec.Selector)
-			updatedPool.Spec.Selector = map[inferenceapi.LabelKey]inferenceapi.LabelValue{
+			newSelector := map[inferenceapi.LabelKey]inferenceapi.LabelValue{
 				inferenceapi.LabelKey("app"): inferenceapi.LabelValue("lifecycle-test-app-updated"),
 			}
+			updatedPool.Spec.Selector = newSelector
 
-			err = s.Client.Update(context.TODO(), updatedPool)
+			err = s.Client.Update(context.Background(), updatedPool)
 			require.NoErrorf(t, err, "Failed to update InferencePool %s", poolNN.String())
+			infrakubernetes.InferencePoolMustHaveSelector(t, s.Client, poolNN, newSelector)
 
 			fetchedAfterUpdate := &inferenceapi.InferencePool{}
-			// Use DefaultTestTimeout for the overall wait and a 1-second poll interval for Eventually.
-			require.Eventually(t, func() bool {
-				if err := s.Client.Get(context.TODO(), poolNN, fetchedAfterUpdate); err != nil {
-					return false
-				}
-				if fetchedAfterUpdate.Spec.Selector == nil {
-					return false
-				}
-				// Check based on the current API (using .Spec.Selector)
-				return fetchedAfterUpdate.Spec.Selector[inferenceapi.LabelKey("app")] == inferenceapi.LabelValue("lifecycle-test-app-updated")
-			}, s.TimeoutConfig.DefaultTestTimeout, 1*time.Second, "Failed to observe updated Selector")
-
+			err = s.Client.Get(context.Background(), poolNN, fetchedAfterUpdate)
+			require.NoErrorf(t, err, "Failed to get InferencePool %s after update verification", poolNN.String())
 			require.NotNil(t, fetchedAfterUpdate.Spec.Selector, "Updated Selector should not be nil")
 			require.Equal(t, inferenceapi.LabelValue("lifecycle-test-app-updated"), fetchedAfterUpdate.Spec.Selector[inferenceapi.LabelKey("app")],
 				"Selector 'app' label was not updated as expected")
@@ -118,7 +108,7 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 					Namespace: hardcodedNamespace,
 				},
 			}
-			err := s.Client.Delete(context.TODO(), poolToDelete)
+			err := s.Client.Delete(context.Background(), poolToDelete)
 			if err != nil && !apierrors.IsNotFound(err) {
 				require.NoErrorf(t, err, "Failed to delete InferencePool %s", poolNN.String())
 			}
