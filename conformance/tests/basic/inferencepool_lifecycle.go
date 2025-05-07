@@ -73,7 +73,7 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 			// Proposal 002 and current Go type definition
 			require.NotNil(t, createdPool.Spec.Selector, "Selector should not be nil")
 			// Assuming LabelKey and LabelValue are effectively strings for this map access
-			require.Equal(t, inferenceapi.LabelValue("lifecycle-test-app"), createdPool.Spec.Selector[inferenceapi.LabelKey("app")],
+			require.Equal(t, inferenceapi.LabelValue("infra-backend-v1"), createdPool.Spec.Selector[inferenceapi.LabelKey("app")],
 				"Selector 'app' label does not match manifest")
 
 			t.Logf("Successfully created and read InferencePool %s/%s", poolNN.Namespace, poolNN.Name)
