@@ -18,19 +18,6 @@ package scheduling
 
 import "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/plugins"
 
-// NewSchedulerConfig creates a new SchedulerConfig object with the given plugins.
-func NewSchedulerConfig(preSchedulePlugins []plugins.PreSchedule, filters []plugins.Filter, scorers map[plugins.Scorer]int,
-	picker plugins.Picker, postSchedulePlugins []plugins.PostSchedule) *SchedulerConfig {
-	return &SchedulerConfig{
-		preSchedulePlugins:  preSchedulePlugins,
-		filters:             filters,
-		scorers:             scorers,
-		picker:              picker,
-		postSchedulePlugins: postSchedulePlugins,
-	}
-}
-
-// SchedulerConfig provides a configuration for the scheduler which influence routing decisions.
 type SchedulerConfig struct {
 	preSchedulePlugins  []plugins.PreSchedule
 	filters             []plugins.Filter

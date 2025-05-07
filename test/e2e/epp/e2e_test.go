@@ -96,8 +96,12 @@ var _ = ginkgo.Describe("InferencePool", func() {
 func newInferenceModel(ns string) *v1alpha2.InferenceModel {
 	targets := []v1alpha2.TargetModel{
 		{
-			Name:   targetModelName,
-			Weight: ptr.To(int32(100)),
+			Name:   modelName,
+			Weight: ptr.To(int32(50)),
+		},
+		{
+			Name:   "cad-fabricator",
+			Weight: ptr.To(int32(50)),
 		},
 	}
 	return testutils.MakeModelWrapper("inferencemodel-sample", ns).
