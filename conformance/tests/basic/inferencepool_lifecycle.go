@@ -53,15 +53,14 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 			Namespace: hardcodedNamespace,
 		}
 
+		acceptedCondition := metav1.Condition{
+			Type:   string(gatewayv1.GatewayConditionAccepted),
+			Status: metav1.ConditionTrue,
+			Reason: "",
+		}
+
 		t.Run("Step 1 & 2: Create and Read InferencePool", func(t *testing.T) {
-			acceptedCondition := metav1.Condition{
-				Type:   string(gatewayv1.GatewayConditionAccepted),
-				Status: metav1.ConditionTrue,
-				Reason: "",
-			}
-			// Assuming InferencePoolMustHaveCondition uses appropriate timeouts from s.TimeoutConfig internally
-			// (e.g. DefaultTestTimeout or a more specific one if defined for generic resource conditions)
-			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, s.TimeoutConfig, poolNN, acceptedCondition)
+			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, acceptedCondition)
 
 			createdPool := &inferenceapi.InferencePool{}
 			err := s.Client.Get(context.TODO(), poolNN, createdPool)
@@ -72,7 +71,6 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 			// API Discrepancy: InferencePoolSpec pod selector field name mismatch between API
 			// Proposal 002 and current Go type definition
 			require.NotNil(t, createdPool.Spec.Selector, "Selector should not be nil")
-			// Assuming LabelKey and LabelValue are effectively strings for this map access
 			require.Equal(t, inferenceapi.LabelValue("infra-backend-v1"), createdPool.Spec.Selector[inferenceapi.LabelKey("app")],
 				"Selector 'app' label does not match manifest")
 
@@ -125,18 +123,7 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 				require.NoErrorf(t, err, "Failed to delete InferencePool %s", poolNN.String())
 			}
 
-			deletedPool := &inferenceapi.InferencePool{}
-			// Use DeleteTimeout for the overall wait and a 1-second poll interval for Eventually.
-			require.Eventually(t, func() bool {
-				fetchErr := s.Client.Get(context.TODO(), poolNN, deletedPool)
-				if fetchErr != nil {
-					if apierrors.IsNotFound(fetchErr) {
-						return true
-					}
-				}
-				return false
-			}, s.TimeoutConfig.DeleteTimeout, 1*time.Second, "InferencePool %s not deleted within timeout", poolNN.String())
-
+			infrakubernetes.InferencePoolMustBeDeleted(t, s.Client, poolNN)
 			t.Logf("Successfully verified deletion of InferencePool %s/%s", poolNN.Namespace, poolNN.Name)
 		})
 	},

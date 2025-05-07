@@ -34,6 +34,9 @@ type InferenceExtensionTimeoutConfig struct {
 
 	// InferencePoolMustHaveConditionInterval represents the polling interval for checking an InferencePool's condition.
 	InferencePoolMustHaveConditionInterval time.Duration
+
+	// GatewayObjectPollInterval is the polling interval used when waiting for a Gateway object to appear.
+	GatewayObjectPollInterval time.Duration
 }
 
 func DefaultInferenceExtensionTimeoutConfig() InferenceExtensionTimeoutConfig {
@@ -41,18 +44,22 @@ func DefaultInferenceExtensionTimeoutConfig() InferenceExtensionTimeoutConfig {
 		TimeoutConfig:                          gatewayconfig.DefaultTimeoutConfig(), // Get upstream defaults
 		InferencePoolMustHaveConditionTimeout:  300 * time.Second,
 		InferencePoolMustHaveConditionInterval: 10 * time.Second,
+		GatewayObjectPollInterval:              5 * time.Second, // Default polling interval for Gateway object creation
 	}
 }
 
-// NewInferenceExtensionTimeoutConfigFromGatewayConfig creates a new InferenceExtensionTimeoutConfig
-// using the provided gatewayconfig.TimeoutConfig for the embedded part and
-// default values for the extension-specific fields.
-func NewInferenceExtensionTimeoutConfigFromGatewayConfig(gc gatewayconfig.TimeoutConfig) InferenceExtensionTimeoutConfig {
-	defaults := DefaultInferenceExtensionTimeoutConfig() // Your existing function for defaults
-	return InferenceExtensionTimeoutConfig{
-		TimeoutConfig:                          gc, // Use the (flag-aware) upstream config
-		InferencePoolMustHaveConditionTimeout:  defaults.InferencePoolMustHaveConditionTimeout,
-		InferencePoolMustHaveConditionInterval: defaults.InferencePoolMustHaveConditionInterval,
-		// Initialize other extension-specific fields from 'defaults' as needed
+func SetupInferenceExtensionTimeoutConfig(timeoutConfig *InferenceExtensionTimeoutConfig) {
+	gatewayconfig.SetupTimeoutConfig(&timeoutConfig.TimeoutConfig)
+
+	defaults := DefaultInferenceExtensionTimeoutConfig()
+
+	if timeoutConfig.InferencePoolMustHaveConditionTimeout == 0 {
+		timeoutConfig.InferencePoolMustHaveConditionTimeout = defaults.InferencePoolMustHaveConditionTimeout
+	}
+	if timeoutConfig.InferencePoolMustHaveConditionInterval == 0 {
+		timeoutConfig.InferencePoolMustHaveConditionInterval = defaults.InferencePoolMustHaveConditionInterval
+	}
+	if timeoutConfig.GatewayObjectPollInterval == 0 {
+		timeoutConfig.GatewayObjectPollInterval = defaults.GatewayObjectPollInterval
 	}
 }
