@@ -45,10 +45,13 @@ var InferencePoolLifecycle = suite.ConformanceTest{
 	Manifests:   []string{"tests/basic/inferencepool_lifecycle.yaml"},
 	Features:    []features.FeatureName{},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
-		poolName := "inferencepool-lifecycle-test"
+		poolName := "inferencepool-lifecycle"
 		// Hardcode the namespace for now, aligning with the manifest.
-		const hardcodedNamespace = "default"
-		poolNN := types.NamespacedName{Name: poolName, Namespace: "default"}
+		const hardcodedNamespace = "gateway-conformance-app-backend"
+		poolNN := types.NamespacedName{
+			Name:      poolName,
+			Namespace: hardcodedNamespace,
+		}
 
 		t.Run("Step 1 & 2: Create and Read InferencePool", func(t *testing.T) {
 			acceptedCondition := metav1.Condition{
