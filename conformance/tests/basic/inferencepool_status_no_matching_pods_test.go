@@ -8,11 +8,14 @@ import (
 
 	// Adjust the import path if your API types are located elsewhere.
 	inferenceapi "sigs.k8s.io/gateway-api-inference-extension/api/v1alpha2"
+	"sigs.k8s.io/gateway-api-inference-extension/conformance/tests"
+	infrakubernetes "sigs.k8s.io/gateway-api-inference-extension/conformance/utils/kubernetes"
+	gatewaykubernetes "sigs.k8s.io/gateway-api/conformance/utils/kubernetes"
 	"sigs.k8s.io/gateway-api/conformance/utils/suite"
 )
 
 func init() {
-	ConformanceTests = append(ConformanceTests, InferencePoolStatusNoMatchingPods)
+	tests.ConformanceTests = append(tests.ConformanceTests, InferencePoolStatusNoMatchingPods)
 }
 
 var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
@@ -41,7 +44,7 @@ var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
 			// a recognized backend, which can be a prerequisite for the InferencePool
 			// controller to fully process it and set its own status conditions.
 			t.Logf("Waiting for HTTPRoute %s to be accepted by Gateway %s", routeNN.String(), gatewayNN.String())
-			s.EventuallyHTTPRouteAccepted(t, routeNN, gatewayNN)
+			gatewaykubernetes.GatewayAndHTTPRoutesMustBeAccepted(t, s.Client, s.TimeoutConfig, routeNN, gatewayNN)
 
 			// Ensure the InferencePool itself is marked as "Accepted" by its controller.
 			// This means the InferencePool controller has acknowledged and validated its spec.
@@ -54,19 +57,16 @@ var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
 			}
 			t.Logf("Waiting for InferencePool %s to have condition: Type=%s, Status=%s, Reason=%s",
 				poolNN.String(), acceptedCondition.Type, acceptedCondition.Status, acceptedCondition.Reason)
-			s.EventuallyInferencePoolHasCondition(t, poolNN, acceptedCondition)
+			// Pass s.Client and s.TimeoutConfig as Eventually helpers typically need them.
+			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, acceptedCondition)
 			t.Logf("InferencePool %s is Accepted", poolNN.String())
 
 			// Step 2: Observe the status of "pool-no-pods".
 			// Expected: Its status should indicate a non-ready state because no pods match its selector.
 			// We expect a condition like: Type: "Ready", Status: "False", Reason: "NoMatchingPods".
 
-			// TODO: Confirm the exact "Reason" string ("NoMatchingPods") with the API specification.
-			// If the API defines a constant like `inferenceapi.ReasonNoMatchingPods` or
-			// `inferenceapi.ReasonNoAvailablePods`, use that.
-			// Replace "Ready" (Type) with inferenceapi.InferencePoolConditionReady if available.
 			notReadyCondition := metav1.Condition{
-				Type:   string(inferenceapi.InferencePoolConditionReady), // e.g., "Ready" or inferenceapi.InferencePoolConditionReady
+				Type:   string(inferenceapi.InferencePoolConditionAccepted),
 				Status: metav1.ConditionFalse,
 				Reason: "NoMatchingPods", // As per design doc; confirm with API spec
 			}
@@ -74,7 +74,7 @@ var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
 			t.Logf("Waiting for InferencePool %s to have condition: Type=%s, Status=%s, Reason=%s",
 				poolNN.String(), notReadyCondition.Type, notReadyCondition.Status, notReadyCondition.Reason)
 
-			s.EventuallyInferencePoolHasCondition(t, poolNN, notReadyCondition)
+			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, notReadyCondition)
 
 			t.Logf("Successfully verified InferencePool %s has Ready:False with Reason:%s", poolNN.String(), notReadyCondition.Reason)
 		})
