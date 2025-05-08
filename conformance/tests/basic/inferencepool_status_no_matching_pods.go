@@ -10,6 +10,7 @@ import (
 	inferenceapi "sigs.k8s.io/gateway-api-inference-extension/api/v1alpha2"
 	"sigs.k8s.io/gateway-api-inference-extension/conformance/tests"
 	infrakubernetes "sigs.k8s.io/gateway-api-inference-extension/conformance/utils/kubernetes"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewaykubernetes "sigs.k8s.io/gateway-api/conformance/utils/kubernetes"
 	"sigs.k8s.io/gateway-api/conformance/utils/suite"
 )
@@ -21,7 +22,7 @@ func init() {
 var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
 	ShortName:   "InferencePoolStatusNoMatchingPods",
 	Description: "Validate InferencePool status when modelServerSelector does not match any running pods.",
-	Manifests:   []string{"../../tests/basic/inferencepool_status_no_matching_pods.yaml"},
+	Manifests:   []string{"tests/basic/inferencepool_status_no_matching_pods.yaml"},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
 		t.Run("InferencePool pool-no-pods status indicates no matching pods", func(t *testing.T) {
 			poolNN := types.NamespacedName{
@@ -36,6 +37,11 @@ var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
 				Name:      "conformance-gateway",       // As defined in shared manifests
 				Namespace: "gateway-conformance-infra", // As defined in shared manifests
 			}
+			httpRouteAcceptedCondition := metav1.Condition{
+				Type:   string(gatewayv1.RouteConditionAccepted),
+				Status: metav1.ConditionTrue,
+				Reason: string(gatewayv1.RouteReasonAccepted),
+			}
 
 			// Step 1: Create an InferencePool "pool-no-pods" (done by manifest loading).
 			// Expected: "pool-no-pods" creation is successful.
@@ -44,7 +50,8 @@ var InferencePoolStatusNoMatchingPods = suite.ConformanceTest{
 			// a recognized backend, which can be a prerequisite for the InferencePool
 			// controller to fully process it and set its own status conditions.
 			t.Logf("Waiting for HTTPRoute %s to be accepted by Gateway %s", routeNN.String(), gatewayNN.String())
-			gatewaykubernetes.GatewayAndHTTPRoutesMustBeAccepted(t, s.Client, s.TimeoutConfig, routeNN, gatewayNN)
+			gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, routeNN, gatewayNN, httpRouteAcceptedCondition)
+			t.Logf("HTTPRoute %s is Accepted by Gateway %s", routeNN.String(), gatewayNN.String())
 
 			// Ensure the InferencePool itself is marked as "Accepted" by its controller.
 			// This means the InferencePool controller has acknowledged and validated its spec.
