@@ -1,0 +1,61 @@
+# Test manifest for InferencePool status when no pods match the selector.
+# This manifest defines an InferencePool with a selector that is not expected
+# to match any running pods, and an HTTPRoute to make it accepted by a Gateway.
+# The inferencepool_status_no_matching_pods_test.go test will use these
+# resources to verify the InferencePool's status conditions.
+
+# --- InferencePool Definition for No Matching Pods Test ---
+# This InferencePool is configured with a selector that should not match any pods.
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferencePool
+metadata:
+  # This name should align with variables used in the corresponding Go test file.
+  name: pool-no-pods
+  # This namespace should be one created by the base manifests.
+  namespace: gateway-conformance-app-backend
+spec:
+  # --- Selector (Required) ---
+  # Selects Pods; configured here to match no running Pods.
+  selector:
+    app: "non-existent-app" # This label is not expected on any pods
+
+  # --- Target Port (Required) ---
+  # The port the model server container would listen on if pods were found.
+  targetPortNumber: 8080
+
+  # --- Extension Reference ---
+  # GKE-specific configuration reference.
+  # May not be strictly necessary for this test's core logic (no pods),
+  # but included for structural validity if the CRD requires it.
+  extensionRef:
+    # group: "" # Optional
+    # kind: Service # Optional
+    name: pool-no-pods-epp # Unique name for this test's extension reference
+
+---
+# --- HTTPRoute Definition for No Matching Pods Test ---
+# This HTTPRoute links the InferencePool to the shared Gateway,
+# allowing the InferencePool to receive an "Accepted" status condition,
+# which is often a prerequisite for further status processing.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httproute-for-pool-no-pods
+  namespace: gateway-conformance-app-backend
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: conformance-gateway # Name of the shared Gateway from manifests.yaml
+    namespace: gateway-conformance-infra  # Namespace of the shared Gateway
+    sectionName: http
+  rules:
+  - backendRefs:
+    - group: inference.networking.x-k8s.io # InferencePool API group
+      kind: InferencePool
+      name: pool-no-pods # Name of the InferencePool this route points to
+      port: 8080 # Matching the InferencePool's targetPortNumber
+    matches:
+    - path:
+        type: PathPrefix
+        value: /no-pods-pool-test
