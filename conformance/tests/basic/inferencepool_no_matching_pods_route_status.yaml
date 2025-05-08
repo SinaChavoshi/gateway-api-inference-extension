@@ -1,40 +1,45 @@
-# Test manifest for InferencePool status when no pods match the selector.
-# This manifest defines an InferencePool with a selector that is not expected
-# to match any running pods, and an HTTPRoute to make it accepted by a Gateway.
-# The inferencepool_status_no_matching_pods_test.go test will use these
-# resources to verify the InferencePool's status conditions.
+# inferencepool_no_matching_pods_route_status.yaml
 
-# --- InferencePool Definition for No Matching Pods Test ---
-# This InferencePool is configured with a selector that should not match any pods.
+# This manifest defines an InferencePool with a selector that is NOT expected
+# to match any running pods. It also defines an HTTPRoute that uses this
+# InferencePool as a backend.
+# The test will verify that the HTTPRoute and Gateway reflect an appropriate
+# failure/non-ready status due to the InferencePool having no available backends.
+
+# --- InferencePool Definition ---
+# This InferencePool's selector is intentionally set to "app: non-existent-app"
+# to ensure no pods are selected.
 apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferencePool
 metadata:
-  # This name must match the 'poolNN' variable defined in the
-  # go test file.
+  # This name must match the 'poolName' variable defined in the
+  # conformance/tests/basic/inferencepool_no_matching_pods_route_status.go test file.
   name: pool-no-pods
   # This namespace should be one created by the base manifests.
   namespace: gateway-conformance-app-backend
 spec:
   # --- Selector (Required) ---
-  # Selects Pods; configured here to match no running Pods.
+  # Selects Pods that are part of this pool.
+  # For this test, this selector is intentionally designed to not match any pods.
   selector:
-    app: "non-existent-app" # This label is not expected on any pods
+    app: "non-existent-app"
 
   # --- Target Port (Required) ---
-  # The port the model server container would listen on if pods were found.
+  # The port on the model server Pods that traffic should be sent to.
   targetPortNumber: 8080
 
   # --- Extension Reference ---
-  # GKE-specific configuration reference.
   extensionRef:
     # group: "" # Optional
     # kind: Service # Optional
     name: pool-no-pods-epp
+    failureMode: FailClose # Behavior when the extension is unavailable
 
 ---
-# --- HTTPRoute Definition for No Matching Pods Test ---
-# This HTTPRoute links the InferencePool to the shared Gateway,
-# allowing the InferencePool to receive an "Accepted" status condition.
+# --- HTTPRoute Definition ---
+# This HTTPRoute links the 'pool-no-pods' InferencePool to the shared Gateway.
+# The test will observe the status of this HTTPRoute to ensure it reflects
+# the unavailability of the InferencePool's backends.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -44,9 +49,9 @@ spec:
   parentRefs:
   - group: gateway.networking.k8s.io
     kind: Gateway
-    name: conformance-gateway # Name of the shared Gateway from manifests.yaml
+    name: conformance-gateway # Name of the shared Gateway from base manifests
     namespace: gateway-conformance-infra  # Namespace of the shared Gateway
-    sectionName: http
+    sectionName: http # Listener name on the Gateway
   rules:
   - backendRefs:
     - group: inference.networking.x-k8s.io # InferencePool API group
