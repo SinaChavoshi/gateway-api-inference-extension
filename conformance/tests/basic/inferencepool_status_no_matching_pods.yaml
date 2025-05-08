@@ -9,7 +9,8 @@
 apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferencePool
 metadata:
-  # This name should align with variables used in the corresponding Go test file.
+  # This name must match the 'poolNN' variable defined in the
+  # go test file.
   name: pool-no-pods
   # This namespace should be one created by the base manifests.
   namespace: gateway-conformance-app-backend
@@ -25,18 +26,15 @@ spec:
 
   # --- Extension Reference ---
   # GKE-specific configuration reference.
-  # May not be strictly necessary for this test's core logic (no pods),
-  # but included for structural validity if the CRD requires it.
   extensionRef:
     # group: "" # Optional
     # kind: Service # Optional
-    name: pool-no-pods-epp # Unique name for this test's extension reference
+    name: pool-no-pods-epp
 
 ---
 # --- HTTPRoute Definition for No Matching Pods Test ---
 # This HTTPRoute links the InferencePool to the shared Gateway,
-# allowing the InferencePool to receive an "Accepted" status condition,
-# which is often a prerequisite for further status processing.
+# allowing the InferencePool to receive an "Accepted" status condition.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
