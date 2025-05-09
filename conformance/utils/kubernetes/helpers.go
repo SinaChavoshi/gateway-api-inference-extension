@@ -290,8 +290,8 @@ func HTTPRouteMustHaveParentStatusConditions(
 	t.Helper()
 
 	timeoutConf := config.DefaultInferenceExtensionTimeoutConfig()
-	timeout := timeoutConf.InferencePoolMustHaveConditionTimeout
-	pollingInterval := timeoutConf.InferencePoolMustHaveConditionInterval
+	timeout := timeoutConf.HTTPRouteMustHaveConditionTimeout
+	pollingInterval := timeoutConf.HTTPRouteMustHaveConditionInterval
 
 	var lastObservedRouteStatus string
 	var lastRelevantParentStatusLog string

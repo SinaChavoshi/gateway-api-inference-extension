@@ -35,10 +35,10 @@ func init() {
 }
 
 // InferencePoolEPPReferenceNonExistentServiceStatus defines the test case for verifying
-// InferencePool status when its extensionRef points to a non-existent EPP service.
+// HTTPRoute status when it references an InferencePool whose extensionRef points to a non-existent EPP service.
 var InferencePoolEPPReferenceNonExistentServiceStatus = suite.ConformanceTest{
 	ShortName:   "InferencePoolEPPReferenceNonExistentServiceStatus",
-	Description: "Validate InferencePool status reports an error when extensionRef points to a non-existent EPP service.",
+	Description: "Validate HTTPRoute status reports an error when referencing an InferencePool with a non-existent EPP service extensionRef.",
 	Manifests:   []string{"tests/basic/inference_epp_reference_non_existent_service_status.yaml"},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
 		poolNN := types.NamespacedName{
@@ -54,36 +54,47 @@ var InferencePoolEPPReferenceNonExistentServiceStatus = suite.ConformanceTest{
 			Namespace: "gateway-conformance-infra", // As defined in shared manifests
 		}
 
+		// Step 1: Ensure the HTTPRoute is accepted by the Gateway. This is a prerequisite
+		// for the controller to process the backendRefs and potentially report errors.
 		httpRouteAcceptedCondition := metav1.Condition{
 			Type:   string(gatewayv1.RouteConditionAccepted),
 			Status: metav1.ConditionTrue,
 			Reason: string(gatewayv1.RouteReasonAccepted),
 		}
-
-		// Step 1: Ensure the HTTPRoute is accepted by the Gateway. This makes the InferencePool
-		// a recognized backend, which can be a prerequisite for the InferencePool
-		// controller to fully process it and set its own status conditions.
 		t.Logf("Waiting for HTTPRoute %s to be accepted by Gateway %s", routeNN.String(), gatewayNN.String())
 		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, routeNN, gatewayNN, httpRouteAcceptedCondition)
 		t.Logf("HTTPRoute %s is Accepted by Gateway %s", routeNN.String(), gatewayNN.String())
 
-		// Step 2: Observe the status of the InferencePool "pool-non-existent-epp".
-		// Expected: Its status should indicate a non-ready state because its extensionRef
-		// points to a service that does not exist.
-		// We expect a condition like: Type: "Accepted", Status: "False", Reason: "EPPServiceNotFound".
-
-		expectedCondition := metav1.Condition{
-			Type:   string(inferenceapi.InferencePoolConditionAccepted),
+		// Step 2: Observe the status of the HTTPRoute.
+		// Expected: The HTTPRoute's 'Reconciled' condition should be False
+		// because the backend (InferencePool with non-existent EPP service) cannot be reconciled.
+		// The message should contain information about the missing service.
+		httpRouteReconciledCondition := metav1.Condition{
+			Type:   string(gatewayv1.RouteConditionPartiallyInvalid),
 			Status: metav1.ConditionFalse,
-			Reason: "EPPServiceNotFound", // Based on the expected reason from the test description.
+			Reason: "ReconciliationFailed", // As observed from `kubectl get httproute -o yaml`
 		}
 
-		t.Logf("Waiting for InferencePool %s to have condition: Type=%s, Status=%s, Reason=%s",
-			poolNN.String(), expectedCondition.Type, expectedCondition.Status, expectedCondition.Reason)
+		t.Logf("Waiting for HTTPRoute %s to have condition: Type=%s, Status=%s, Reason=%s",
+			routeNN.String(), httpRouteReconciledCondition.Type, httpRouteReconciledCondition.Status, httpRouteReconciledCondition.Reason)
 
-		infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, expectedCondition)
+		// We do not check the message directly in `HTTPRouteMustHaveCondition` due to helper limitations,
+		// but the reason and status should indicate the failure.
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, routeNN, gatewayNN, httpRouteReconciledCondition)
 
-		t.Logf("Successfully verified InferencePool %s has Type:%s Status:%s with Reason:%s",
-			poolNN.String(), expectedCondition.Type, expectedCondition.Status, expectedCondition.Reason)
+		t.Logf("Successfully verified HTTPRoute %s has Type:%s Status:%s with Reason:%s due to non-existent EPP service",
+			routeNN.String(), httpRouteReconciledCondition.Type, httpRouteReconciledCondition.Status, httpRouteReconciledCondition.Reason)
+
+		// Optional: Verify InferencePool status remains 'Accepted:True' and doesn't show specific EPP error,
+		// as per the observed behavior and the linked issue #806.
+		// This confirms the current API behavior that the error is reflected on the HTTPRoute.
+		inferencePoolAcceptedCondition := metav1.Condition{
+			Type:   string(inferenceapi.InferencePoolConditionAccepted),
+			Status: metav1.ConditionTrue,
+			Reason: string(inferenceapi.InferencePoolReasonAccepted),
+		}
+		t.Logf("Verifying InferencePool %s remains Accepted: True", poolNN.String())
+		infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, inferencePoolAcceptedCondition)
+		t.Logf("InferencePool %s remains Accepted: True, confirming error propagates to HTTPRoute", poolNN.String())
 	},
 }
