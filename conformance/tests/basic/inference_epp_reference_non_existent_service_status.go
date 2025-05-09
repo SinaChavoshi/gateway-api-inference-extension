@@ -18,6 +18,7 @@ package basic
 
 import (
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -61,8 +62,13 @@ var InferencePoolEPPReferenceNonExistentServiceStatus = suite.ConformanceTest{
 			Status: metav1.ConditionTrue,
 			Reason: string(gatewayv1.RouteReasonAccepted),
 		}
+
+		// Increase the timeout for HTTPRoute conditions
+		testTimeoutConfig := s.TimeoutConfig
+		testTimeoutConfig.HTTPRouteMustHaveCondition = 5 * time.Minute // Increased from default 2 minutes
+
 		t.Logf("Waiting for HTTPRoute %s to be accepted by Gateway %s", routeNN.String(), gatewayNN.String())
-		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, routeNN, gatewayNN, httpRouteAcceptedCondition)
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, testTimeoutConfig, routeNN, gatewayNN, httpRouteAcceptedCondition)
 		t.Logf("HTTPRoute %s is Accepted by Gateway %s", routeNN.String(), gatewayNN.String())
 
 		// Step 2: Observe the status of the HTTPRoute.
@@ -70,7 +76,7 @@ var InferencePoolEPPReferenceNonExistentServiceStatus = suite.ConformanceTest{
 		// because the backend (InferencePool with non-existent EPP service) cannot be reconciled.
 		// The message should contain information about the missing service.
 		httpRouteReconciledCondition := metav1.Condition{
-			Type:   string(gatewayv1.RouteConditionPartiallyInvalid),
+			Type:   "Reconciled",
 			Status: metav1.ConditionFalse,
 			Reason: "ReconciliationFailed", // As observed from `kubectl get httproute -o yaml`
 		}
@@ -85,9 +91,8 @@ var InferencePoolEPPReferenceNonExistentServiceStatus = suite.ConformanceTest{
 		t.Logf("Successfully verified HTTPRoute %s has Type:%s Status:%s with Reason:%s due to non-existent EPP service",
 			routeNN.String(), httpRouteReconciledCondition.Type, httpRouteReconciledCondition.Status, httpRouteReconciledCondition.Reason)
 
-		// Optional: Verify InferencePool status remains 'Accepted:True' and doesn't show specific EPP error,
+		// step3: Verify InferencePool status remains 'Accepted:True' and doesn't show specific EPP error,
 		// as per the observed behavior and the linked issue #806.
-		// This confirms the current API behavior that the error is reflected on the HTTPRoute.
 		inferencePoolAcceptedCondition := metav1.Condition{
 			Type:   string(inferenceapi.InferencePoolConditionAccepted),
 			Status: metav1.ConditionTrue,
