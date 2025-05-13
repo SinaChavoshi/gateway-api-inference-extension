@@ -1,0 +1,73 @@
+# conformance/tests/basic/inferencepool_backend_service_no_endpoints.yaml
+
+# This manifest defines a Kubernetes Service that is intentionally not backed by any Pods/endpoints.
+# It also defines an InferencePool that references this Service via its modelServerSelector,
+# and an HTTPRoute that routes traffic to this InferencePool.
+
+# --- Backend Service with No Endpoints ---
+# This Service is designed to have no backing Pods/endpoints.
+# The selector is set to a label that is not used by any Deployment.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc-no-endpoints
+  namespace: gateway-conformance-app-backend
+spec:
+  selector:
+    # This label 'app: no-match-backend' is intentionally not used by any Deployment,
+    # ensuring that this Service has no associated endpoints.
+    app: no-match-backend
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8080
+    targetPort: 8080
+
+---
+# --- InferencePool Definition ---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferencePool
+metadata:
+  # This name must match the 'poolNN' variable defined in the
+  # conformance/tests/basic/inferencepool_backend_service_no_endpoints.go test file.
+  name: pool-no-endpoints
+  # This namespace should be one created by the base manifests.
+  namespace: gateway-conformance-app-backend
+spec:
+  # --- Selector (Required) ---
+  # Selects the Pods belonging to this pool.
+  selector:
+    app: "no-match-backend"
+
+  # --- Target Port (Required) ---
+  # The port the model server container listens on.
+  targetPortNumber: 8080 # Matches the Service's targetPort
+
+  # --- Extension Reference ---
+  extensionRef:
+    name: backend-svc-no-endpoints
+
+---
+# --- HTTPRoute Definition ---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httproute-for-pool-no-endpoints
+  namespace: gateway-conformance-app-backend
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: conformance-gateway # Name of the shared Gateway from base manifests
+    namespace: gateway-conformance-infra  # Namespace of the shared Gateway
+    sectionName: http
+  rules:
+  - backendRefs:
+    - group: inference.networking.x-k8s.io # InferencePool API group
+      kind: InferencePool
+      name: pool-no-endpoints # Name of the InferencePool this route points to
+      port: 8080 # Matching the InferencePool's targetPortNumber
+    matches:
+    - path:
+        type: PathPrefix
+        value: /no-endpoints-pool-test

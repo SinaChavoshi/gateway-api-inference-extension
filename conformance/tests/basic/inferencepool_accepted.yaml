@@ -1,3 +1,5 @@
+
+
 # Basic InferencePool for acceptance testing.
 # This manifest defines the minimal required fields to create valid
 # InferencePool and HTTPRoute resources, which the InferencePoolAccepted
