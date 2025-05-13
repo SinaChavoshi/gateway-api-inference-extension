@@ -44,15 +44,14 @@ func init() {
 var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 	ShortName:   "InferencePoolResolvedRefsCondition",
 	Description: "Verify that an InferencePool correctly surfaces the 'ResolvedRefs' condition type, indicating whether it is successfully referenced by other Gateway API resources.",
-	Manifests:   []string{"/conformance/tests/basic/inferencepool_resolvedrefs_condition.yaml"},
+	Manifests:   []string{"tests/basic/inferencepool_resolvedrefs_condition.yaml"},
 	Features:    []features.FeatureName{},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
 		const (
 			appBackendNamespace = "gateway-conformance-app-backend"
-			infraNamespace      = "gateway-conformance-infra"
 			poolName            = "multi-gateway-pool"
-			gateway1Name        = "conformance-gateway" // From base manifests
-			gateway2Name        = "gateway-2"           // Defined in test manifest
+			gateway1Name        = "gateway-1"
+			gateway2Name        = "gateway-2"
 			httpRoute1Name      = "httproute-for-gw1"
 			httpRoute2Name      = "httproute-for-gw2"
 
@@ -72,10 +71,25 @@ var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 			Reason: string(gatewayv1.RouteReasonAccepted),
 		}
 
+		reconciledCondition := metav1.Condition{
+			Type:   "Reconciled",
+			Status: metav1.ConditionTrue,
+			Reason: "ReconciliationSucceeded",
+		}
+
+		// Update the parentRef namespaces for the HTTPRoute assertions
+		gateway1NN := types.NamespacedName{Name: gateway1Name, Namespace: appBackendNamespace}
+		gateway2NN := types.NamespacedName{Name: gateway2Name, Namespace: appBackendNamespace}
+
 		t.Logf("Waiting for HTTPRoute %s to be Accepted by Gateway %s", httpRoute1NN.String(), gateway1Name)
-		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute1NN, types.NamespacedName{Name: gateway1Name, Namespace: infraNamespace}, acceptedCondition)
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute1NN, gateway1NN, acceptedCondition)
+		t.Logf("Waiting for HTTPRoute %s to be Reconciled by Gateway %s", httpRoute1NN.String(), gateway1Name)
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute1NN, gateway1NN, reconciledCondition)
+
 		t.Logf("Waiting for HTTPRoute %s to be Accepted by Gateway %s", httpRoute2NN.String(), gateway2Name)
-		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute2NN, types.NamespacedName{Name: gateway2Name, Namespace: appBackendNamespace}, acceptedCondition)
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute2NN, gateway2NN, acceptedCondition)
+		t.Logf("Waiting for HTTPRoute %s to be Reconciled by Gateway %s", httpRoute2NN.String(), gateway2Name)
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute2NN, gateway2NN, reconciledCondition)
 
 		// Step 3: Observe "multi-gateway-pool" status (Initial state - 2 HTTPRoutes referencing it).
 		// Expected: ResolvedRefs: True, Reason: RefsResolved, and Message indicating multiple references.
