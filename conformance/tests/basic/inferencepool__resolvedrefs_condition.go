@@ -17,13 +17,16 @@ limitations under the License.
 package basic
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1" // For standard condition types
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/gateway-api/conformance/utils/suite"
-	"sigs.k8s.io/gateway-api/pkg/features" // For standard feature names
+	"sigs.k8s.io/gateway-api/pkg/features"
 
 	// Import the tests package to append to ConformanceTests
 	"sigs.k8s.io/gateway-api-inference-extension/conformance/tests"
@@ -31,30 +34,110 @@ import (
 )
 
 func init() {
-	// Register the InferencePoolAccepted test case with the conformance suite.
-	// This ensures it will be discovered and run by the test runner.
-	tests.ConformanceTests = append(tests.ConformanceTests, InferencePoolAccepted)
+	tests.ConformanceTests = append(tests.ConformanceTests, InferencePoolResolvedRefsCondition)
 }
 
-// InferencePoolAccepted defines the test case for verifying basic InferencePool acceptance.
-var InferencePoolAccepted = suite.ConformanceTest{
-	ShortName:   "InferencePoolAccepted",
-	Description: "A minimal InferencePool resource should be accepted by the controller and report an Accepted condition",
-	Manifests:   []string{"tests/basic/inferencepool_accepted.yaml"},
+// InferencePoolResolvedRefsCondition defines the test case for verifying
+// that an InferencePool correctly surfaces the "ResolvedRefs" condition type
+// as it is referenced by other Gateway API resources.
+var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
+	ShortName:   "InferencePoolResolvedRefsCondition",
+	Description: "Verify that an InferencePool correctly surfaces the 'ResolvedRefs' condition type, indicating whether it is successfully referenced by other Gateway API resources.",
+	Manifests:   []string{"tests/basic/inferencepool_resolvedrefs_condition.yaml"},
 	Features:    []features.FeatureName{},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
-		// created by the associated manifest file.
-		poolNN := types.NamespacedName{Name: "inferencepool-basic-accepted", Namespace: "gateway-conformance-app-backend"}
+		const (
+			appBackendNamespace = "gateway-conformance-app-backend"
+			infraNamespace      = "gateway-conformance-infra"
+			poolName            = "multi-gateway-pool"
+			gateway1Name        = "conformance-gateway" // From base manifests
+			gateway2Name        = "gateway-2"           // Defined in test manifest
+			httpRoute1Name      = "httproute-for-gw1"
+			httpRoute2Name      = "httproute-for-gw2"
 
-		t.Run("InferencePool should have Accepted condition set to True", func(t *testing.T) {
-			// Define the expected status condition. We use the standard "Accepted"
-			// condition type from the Gateway API for consistency.
-			acceptedCondition := metav1.Condition{
-				Type:   string(gatewayv1.GatewayConditionAccepted), // Standard condition type
+			// Expected Reasons for ResolvedRefs condition
+			reasonRefsResolved = "RefsResolved"
+			reasonNoRefsFound  = "NoRefsFound"
+		)
+
+		poolNN := types.NamespacedName{Name: poolName, Namespace: appBackendNamespace}
+		httpRoute1NN := types.NamespacedName{Name: httpRoute1Name, Namespace: appBackendNamespace}
+		httpRoute2NN := types.NamespacedName{Name: httpRoute2Name, Namespace: appBackendNamespace}
+
+		t.Logf("Waiting for HTTPRoute %s to be Accepted by Gateway %s", httpRoute1NN.String(), gateway1Name)
+		s.TimeoutConfig.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute1NN, types.NamespacedName{Name: gateway1Name, Namespace: infraNamespace})
+		t.Logf("Waiting for HTTPRoute %s to be Accepted by Gateway %s", httpRoute2NN.String(), gateway2Name)
+		s.HTTPRouteMustHaveAcceptedCondition(t, s.Client, s.TimeoutConfig, httpRoute2NN, types.NamespacedName{Name: gateway2Name, Namespace: appBackendNamespace})
+
+		// Step 3: Observe "multi-gateway-pool" status (Initial state - 2 HTTPRoutes referencing it).
+		// Expected: ResolvedRefs: True, Reason: RefsResolved, and Message indicating multiple references.
+		t.Run("InferencePool should show ResolvedRefs: True when referenced by multiple HTTPRoutes", func(t *testing.T) {
+			expectedCondition := metav1.Condition{
+				Type:   string(gatewayv1.RouteConditionResolvedRefs), // Use standard Gateway API condition type for references
 				Status: metav1.ConditionTrue,
-				Reason: "", // "" means we don't strictly check the Reason for this basic test.
+				Reason: reasonRefsResolved,
+				// Open action item: API to define exact multi-reference messaging.
+				// For now, we just assert presence of True and Reason.
+				// If a specific message substring is expected, add it here.
 			}
-			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, acceptedCondition)
+			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, expectedCondition)
+			t.Logf("InferencePool %s has ResolvedRefs: True as expected with two references.", poolNN.String())
 		})
+
+		// Step 4: Delete "httproute-for-gw1".
+		t.Run("Delete httproute-for-gw1", func(t *testing.T) {
+			httproute1 := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      httpRoute1NN.Name,
+					Namespace: httpRoute1NN.Namespace,
+				},
+			}
+			t.Logf("Deleting HTTPRoute %s", httpRoute1NN.String())
+			require.NoError(t, s.Client.Delete(context.TODO(), httproute1), "failed to delete httproute-for-gw1")
+			// Give the controller some time to process the deletion
+			time.Sleep(s.TimeoutConfig.GatewayEventualConsistency)
+		})
+
+		// Step 5: Observe "multi-gateway-pool" status (After deleting 1st HTTPRoute).
+		// Expected: ResolvedRefs: True, Message updated to reflect remaining reference count.
+		t.Run("InferencePool should still show ResolvedRefs: True after one HTTPRoute is deleted", func(t *testing.T) {
+			expectedCondition := metav1.Condition{
+				Type:   string(gatewayv1.RouteConditionResolvedRefs),
+				Status: metav1.ConditionTrue,
+				Reason: reasonRefsResolved,
+				// Open action item: API to define exact message for remaining reference count.
+			}
+			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, expectedCondition)
+			t.Logf("InferencePool %s still has ResolvedRefs: True as expected with one reference remaining.", poolNN.String())
+		})
+
+		// Step 6: Delete "httproute-for-gw2".
+		t.Run("Delete httproute-for-gw2", func(t *testing.T) {
+			httproute2 := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      httpRoute2NN.Name,
+					Namespace: httpRoute2NN.Namespace,
+				},
+			}
+			t.Logf("Deleting HTTPRoute %s", httpRoute2NN.String())
+			require.NoError(t, s.Client.Delete(context.TODO(), httproute2), "failed to delete httproute-for-gw2")
+			// Give the controller some time to process the deletion
+			time.Sleep(s.TimeoutConfig.GatewayEventualConsistency)
+		})
+
+		// Step 7: Observe "multi-gateway-pool" status (After deleting 2nd HTTPRoute).
+		// Expected: ResolvedRefs: False, Reason: NoRefsFound, and Message indicating no references.
+		t.Run("InferencePool should show ResolvedRefs: False after all HTTPRoutes are deleted", func(t *testing.T) {
+			expectedCondition := metav1.Condition{
+				Type:   string(gatewayv1.RouteConditionResolvedRefs),
+				Status: metav1.ConditionFalse,
+				Reason: reasonNoRefsFound,
+				// If a specific message for no references is expected, add it here.
+			}
+			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, expectedCondition)
+			t.Logf("InferencePool %s has ResolvedRefs: False as expected with no references.", poolNN.String())
+		})
+
+		t.Logf("TestInferencePoolResolvedRefsCondition completed.")
 	},
 }
