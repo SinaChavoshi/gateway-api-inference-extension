@@ -31,6 +31,7 @@ import (
 	// Import the tests package to append to ConformanceTests
 	"sigs.k8s.io/gateway-api-inference-extension/conformance/tests"
 	infrakubernetes "sigs.k8s.io/gateway-api-inference-extension/conformance/utils/kubernetes"
+	gatewaykubernetes "sigs.k8s.io/gateway-api/conformance/utils/kubernetes"
 )
 
 func init() {
@@ -43,7 +44,7 @@ func init() {
 var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 	ShortName:   "InferencePoolResolvedRefsCondition",
 	Description: "Verify that an InferencePool correctly surfaces the 'ResolvedRefs' condition type, indicating whether it is successfully referenced by other Gateway API resources.",
-	Manifests:   []string{"tests/basic/inferencepool_resolvedrefs_condition.yaml"},
+	Manifests:   []string{"/conformance/tests/basic/inferencepool_resolvedrefs_condition.yaml"},
 	Features:    []features.FeatureName{},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
 		const (
@@ -64,10 +65,17 @@ var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 		httpRoute1NN := types.NamespacedName{Name: httpRoute1Name, Namespace: appBackendNamespace}
 		httpRoute2NN := types.NamespacedName{Name: httpRoute2Name, Namespace: appBackendNamespace}
 
+		// Define the expected "Accepted" condition for HTTPRoutes
+		acceptedCondition := metav1.Condition{
+			Type:   string(gatewayv1.RouteConditionAccepted),
+			Status: metav1.ConditionTrue,
+			Reason: string(gatewayv1.RouteReasonAccepted),
+		}
+
 		t.Logf("Waiting for HTTPRoute %s to be Accepted by Gateway %s", httpRoute1NN.String(), gateway1Name)
-		s.TimeoutConfig.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute1NN, types.NamespacedName{Name: gateway1Name, Namespace: infraNamespace})
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute1NN, types.NamespacedName{Name: gateway1Name, Namespace: infraNamespace}, acceptedCondition)
 		t.Logf("Waiting for HTTPRoute %s to be Accepted by Gateway %s", httpRoute2NN.String(), gateway2Name)
-		s.HTTPRouteMustHaveAcceptedCondition(t, s.Client, s.TimeoutConfig, httpRoute2NN, types.NamespacedName{Name: gateway2Name, Namespace: appBackendNamespace})
+		gatewaykubernetes.HTTPRouteMustHaveCondition(t, s.Client, s.TimeoutConfig, httpRoute2NN, types.NamespacedName{Name: gateway2Name, Namespace: appBackendNamespace}, acceptedCondition)
 
 		// Step 3: Observe "multi-gateway-pool" status (Initial state - 2 HTTPRoutes referencing it).
 		// Expected: ResolvedRefs: True, Reason: RefsResolved, and Message indicating multiple references.
@@ -95,7 +103,7 @@ var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 			t.Logf("Deleting HTTPRoute %s", httpRoute1NN.String())
 			require.NoError(t, s.Client.Delete(context.TODO(), httproute1), "failed to delete httproute-for-gw1")
 			// Give the controller some time to process the deletion
-			time.Sleep(s.TimeoutConfig.GatewayEventualConsistency)
+			time.Sleep(s.TimeoutConfig.GatewayMustHaveCondition)
 		})
 
 		// Step 5: Observe "multi-gateway-pool" status (After deleting 1st HTTPRoute).
@@ -105,7 +113,6 @@ var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 				Type:   string(gatewayv1.RouteConditionResolvedRefs),
 				Status: metav1.ConditionTrue,
 				Reason: reasonRefsResolved,
-				// Open action item: API to define exact message for remaining reference count.
 			}
 			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, expectedCondition)
 			t.Logf("InferencePool %s still has ResolvedRefs: True as expected with one reference remaining.", poolNN.String())
@@ -122,7 +129,7 @@ var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 			t.Logf("Deleting HTTPRoute %s", httpRoute2NN.String())
 			require.NoError(t, s.Client.Delete(context.TODO(), httproute2), "failed to delete httproute-for-gw2")
 			// Give the controller some time to process the deletion
-			time.Sleep(s.TimeoutConfig.GatewayEventualConsistency)
+			time.Sleep(s.TimeoutConfig.GatewayMustHaveCondition)
 		})
 
 		// Step 7: Observe "multi-gateway-pool" status (After deleting 2nd HTTPRoute).
@@ -132,7 +139,6 @@ var InferencePoolResolvedRefsCondition = suite.ConformanceTest{
 				Type:   string(gatewayv1.RouteConditionResolvedRefs),
 				Status: metav1.ConditionFalse,
 				Reason: reasonNoRefsFound,
-				// If a specific message for no references is expected, add it here.
 			}
 			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, expectedCondition)
 			t.Logf("InferencePool %s has ResolvedRefs: False as expected with no references.", poolNN.String())
