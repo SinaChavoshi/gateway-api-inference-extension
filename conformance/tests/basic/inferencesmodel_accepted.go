@@ -17,44 +17,71 @@ limitations under the License.
 package basic
 
 import (
+	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1" // For standard condition types
 	"sigs.k8s.io/gateway-api/conformance/utils/suite"
-	"sigs.k8s.io/gateway-api/pkg/features" // For standard feature names
+	"sigs.k8s.io/gateway-api/pkg/features"
 
 	// Import the tests package to append to ConformanceTests
+	inferenceapi "sigs.k8s.io/gateway-api-inference-extension/api/v1alpha2"
 	"sigs.k8s.io/gateway-api-inference-extension/conformance/tests"
-	infrakubernetes "sigs.k8s.io/gateway-api-inference-extension/conformance/utils/kubernetes"
+	k8utils "sigs.k8s.io/gateway-api-inference-extension/conformance/utils/kubernetes"
 )
 
 func init() {
-	// Register the InferencePoolAccepted test case with the conformance suite.
-	// This ensures it will be discovered and run by the test runner.
-	tests.ConformanceTests = append(tests.ConformanceTests, InferencePoolAccepted)
+	tests.ConformanceTests = append(tests.ConformanceTests, InferenceModelAccepted)
 }
 
-// InferencePoolAccepted defines the test case for verifying basic InferencePool acceptance.
-var InferencePoolAccepted = suite.ConformanceTest{
-	ShortName:   "InferencePoolAccepted",
-	Description: "A minimal InferencePool resource should be accepted by the controller and report an Accepted condition",
-	Manifests:   []string{"tests/basic/inferencepool_accepted.yaml"},
-	Features:    []features.FeatureName{},
+var InferenceModelAccepted = suite.ConformanceTest{
+	ShortName:   "InferenceModelAccepted",
+	Description: "Basic Create and Read operations for InferenceModel.",
+	Manifests:   []string{"tests/basic/inferencesmodel_accepted.yaml"},
+	Features: []features.FeatureName{
+		features.FeatureName("SupportInferenceModel"),
+		features.FeatureName("SupportInferencePool"),
+	},
 	Test: func(t *testing.T, s *suite.ConformanceTestSuite) {
-		// created by the associated manifest file.
-		poolNN := types.NamespacedName{Name: "inferencepool-basic-accepted", Namespace: "gateway-conformance-app-backend"}
+		const (
+			modelNamespace    = "gateway-conformance-app-backend"
+			modelMetaName     = "my-chat-model"
+			modelSpecName     = "chat-model-v1"
+			inferencePoolName = "test-pool-for-model"
+		)
 
-		t.Run("InferencePool should have Accepted condition set to True", func(t *testing.T) {
-			// Define the expected status condition. We use the standard "Accepted"
-			// condition type from the Gateway API for consistency.
-			acceptedCondition := metav1.Condition{
-				Type:   string(gatewayv1.GatewayConditionAccepted), // Standard condition type
-				Status: metav1.ConditionTrue,
-				Reason: "", // "" means we don't strictly check the Reason for this basic test.
+		modelNN := types.NamespacedName{Name: modelMetaName, Namespace: modelNamespace}
+
+		t.Run("Step 1: Read created InferenceModel and verify spec", func(t *testing.T) {
+			createdModel := &inferenceapi.InferenceModel{}
+			err := s.Client.Get(context.TODO(), modelNN, createdModel)
+			require.NoError(t, err, "failed to get InferenceModel resource")
+
+			require.Equal(t, modelSpecName, createdModel.Spec.ModelName, "Read InferenceModel.Spec.ModelName does not match expected")
+
+			expectedPoolRef := inferenceapi.PoolObjectReference{
+				Group: "inference.networking.x-k8s.io",
+				Kind:  "InferencePool",
+				Name:  inferencePoolName,
 			}
-			infrakubernetes.InferencePoolMustHaveCondition(t, s.Client, poolNN, acceptedCondition)
+			require.Equal(t, string(expectedPoolRef.Group), string(createdModel.Spec.PoolRef.Group), "Read InferenceModel.Spec.PoolRef.Group does not match expected")
+			require.Equal(t, string(expectedPoolRef.Kind), string(createdModel.Spec.PoolRef.Kind), "Read InferenceModel.Spec.PoolRef.Kind does not match expected")
+			require.Equal(t, expectedPoolRef.Name, createdModel.Spec.PoolRef.Name, "Read InferenceModel.Spec.PoolRef.Name does not match expected")
+
+			t.Logf("Successfully read and verified InferenceModel %s spec.", modelNN.String())
+		})
+
+		t.Run("Step 2: InferenceModel should have Accepted condition set to True", func(t *testing.T) {
+			acceptedCondition := metav1.Condition{
+				Type:   string(inferenceapi.ModelConditionAccepted),
+				Status: metav1.ConditionTrue,
+				Reason: string(inferenceapi.ModelReasonAccepted),
+			}
+			k8utils.InferenceModelMustHaveCondition(t, s.Client, modelNN, acceptedCondition)
+			t.Logf("Verified InferenceModel %s has Condition %s: True with Reason: %s.",
+				modelNN.String(), inferenceapi.ModelConditionAccepted, inferenceapi.ModelReasonAccepted)
 		})
 	},
 }

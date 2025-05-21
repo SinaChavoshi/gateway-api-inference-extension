@@ -152,3 +152,85 @@ func InferencePoolMustHaveCondition(t *testing.T, c client.Client, poolNN types.
 	}
 	t.Log(logMsg)
 }
+
+// InferenceModelMustHaveCondition waits for the specified InferenceModel resource
+// to exist and report the expected status condition.
+// It polls the InferenceModel's status until the condition is met or the timeout occurs.
+func InferenceModelMustHaveCondition(t *testing.T, c client.Client, modelNN types.NamespacedName, expectedCondition metav1.Condition) {
+	t.Helper()
+
+	var timeoutConfig config.InferenceExtensionTimeoutConfig = config.DefaultInferenceExtensionTimeoutConfig()
+	var lastObservedModel *inferenceapi.InferenceModel
+	var lastError error
+	var conditionFound bool
+
+	waitErr := wait.PollUntilContextTimeout(
+		context.Background(),
+		timeoutConfig.InferencePoolMustHaveConditionInterval, // TODO: Using same timeout as pool for now may need to be updated later.
+		timeoutConfig.InferencePoolMustHaveConditionTimeout,
+		true, func(ctx context.Context) (bool, error) {
+			model := &inferenceapi.InferenceModel{}
+			err := c.Get(ctx, modelNN, model)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					t.Logf("InferenceModel %s not found yet. Retrying.", modelNN.String())
+					lastError = err
+					return false, nil
+				}
+				t.Logf("Error fetching InferenceModel %s (type: %s): %v. Retrying.", modelNN.String(), reflect.TypeOf(model).String(), err)
+				lastError = err
+				return false, nil
+			}
+			lastObservedModel = model
+			lastError = nil
+			conditionFound = false
+
+			if len(model.Status.Conditions) == 0 {
+				t.Logf("InferenceModel %s has no conditions reported yet.", modelNN.String())
+				return false, nil
+			}
+
+			if checkCondition(t, model.Status.Conditions, expectedCondition) {
+				conditionFound = true
+				return true, nil
+			}
+			return false, nil
+		})
+
+	if waitErr != nil || !conditionFound {
+		debugMsg := ""
+		if waitErr != nil {
+			debugMsg += fmt.Sprintf(" Polling error: %v.", waitErr)
+		}
+		if lastError != nil {
+			debugMsg += fmt.Sprintf(" Last error during fetching: %v.", lastError)
+		}
+
+		if lastObservedModel != nil {
+			debugMsg += "\nLast observed InferenceModel status:"
+			if len(lastObservedModel.Status.Conditions) == 0 {
+				debugMsg += " (No conditions reported)"
+			}
+			for _, cond := range lastObservedModel.Status.Conditions {
+				debugMsg += fmt.Sprintf("\n    - Type: %s, Status: %s, Reason: %s, Message: %s", cond.Type, cond.Status, cond.Reason, cond.Message)
+			}
+		} else if lastError == nil || !apierrors.IsNotFound(lastError) {
+			debugMsg += "\nInferenceModel was not found or not observed successfully during polling."
+		}
+
+		finalMsg := fmt.Sprintf("timed out or condition not met for InferenceModel %s to have condition Type=%s, Status=%s",
+			modelNN.String(), expectedCondition.Type, expectedCondition.Status)
+		if expectedCondition.Reason != "" {
+			finalMsg += fmt.Sprintf(", Reason='%s'", expectedCondition.Reason)
+		}
+		finalMsg += "." + debugMsg
+		require.FailNow(t, finalMsg)
+	}
+
+	logMsg := fmt.Sprintf("InferenceModel %s successfully has condition Type=%s, Status=%s",
+		modelNN.String(), expectedCondition.Type, expectedCondition.Status)
+	if expectedCondition.Reason != "" {
+		logMsg += fmt.Sprintf(", Reason='%s'", expectedCondition.Reason)
+	}
+	t.Log(logMsg)
+}
