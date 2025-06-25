@@ -38,7 +38,7 @@ import (
 	conformance_epp "sigs.k8s.io/gateway-api-inference-extension/conformance/testing-epp"
 	"sigs.k8s.io/gateway-api-inference-extension/internal/runnable"
 	backendmetrics "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/backend/metrics"
-	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/common/config"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/common/config/loader"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/datastore"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metrics"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metrics/collectors"
@@ -216,33 +216,32 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	if len(*configText) != 0 || len(*configFile) != 0 {
-		theConfig, err := config.LoadConfig([]byte(*configText), *configFile)
+		theConfig, err := loader.LoadConfig([]byte(*configText), *configFile)
 		if err != nil {
 			setupLog.Error(err, "Failed to load the configuration")
 			return err
 		}
 
-		epp := eppHandle{}
-		instantiatedPlugins, err := config.LoadPluginReferences(theConfig.Plugins, epp)
+		epp := newEppHandle()
+
+		err = loader.LoadPluginReferences(theConfig.Plugins, epp)
 		if err != nil {
 			setupLog.Error(err, "Failed to instantiate the plugins")
 			return err
 		}
 
-		r.schedulerConfig, err = scheduling.LoadSchedulerConfig(theConfig.SchedulingProfiles, instantiatedPlugins)
+		r.schedulerConfig, err = loader.LoadSchedulerConfig(theConfig.SchedulingProfiles, epp)
 		if err != nil {
 			setupLog.Error(err, "Failed to create Scheduler configuration")
 			return err
 		}
 
-		// Add requestcontrol plugins
-		if instantiatedPlugins != nil {
-			r.requestControlConfig = requestcontrol.LoadRequestControlConfig(instantiatedPlugins)
-		}
+		// Add requestControl plugins
+		r.requestControlConfig.AddPlugins(epp.Plugins().GetAllPlugins()...)
 	}
 
 	// --- Initialize Core EPP Components ---
-	scheduler, err := r.initializeScheduler(datastore)
+	scheduler, err := r.initializeScheduler()
 	if err != nil {
 		setupLog.Error(err, "Failed to create scheduler")
 		return err
@@ -293,13 +292,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) initializeScheduler(datastore datastore.Datastore) (*scheduling.Scheduler, error) {
+func (r *Runner) initializeScheduler() (*scheduling.Scheduler, error) {
 	if r.schedulerConfig != nil {
-		return scheduling.NewSchedulerWithConfig(datastore, r.schedulerConfig), nil
+		return scheduling.NewSchedulerWithConfig(r.schedulerConfig), nil
 	}
 
 	// otherwise, no one configured from outside scheduler config. use existing configuration
-	scheduler := scheduling.NewScheduler(datastore)
+	scheduler := scheduling.NewScheduler()
 	if schedulerV2 {
 		queueScorerWeight := envutil.GetEnvInt("QUEUE_SCORE_WEIGHT", scorer.DefaultQueueScorerWeight, setupLog)
 		kvCacheScorerWeight := envutil.GetEnvInt("KV_CACHE_SCORE_WEIGHT", scorer.DefaultKVCacheScorerWeight, setupLog)
@@ -317,11 +316,11 @@ func (r *Runner) initializeScheduler(datastore datastore.Datastore) (*scheduling
 		}
 
 		schedulerConfig := scheduling.NewSchedulerConfig(profile.NewSingleProfileHandler(), map[string]*framework.SchedulerProfile{"schedulerv2": schedulerProfile})
-		scheduler = scheduling.NewSchedulerWithConfig(datastore, schedulerConfig)
+		scheduler = scheduling.NewSchedulerWithConfig(schedulerConfig)
 	}
 
 	if reqHeaderBasedSchedulerForTesting {
-		scheduler = conformance_epp.NewReqHeaderBasedScheduler(datastore)
+		scheduler = conformance_epp.NewReqHeaderBasedScheduler()
 	}
 
 	return scheduler, nil

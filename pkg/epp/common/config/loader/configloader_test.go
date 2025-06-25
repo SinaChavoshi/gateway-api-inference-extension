@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package config
+package loader
 
 import (
 	"context"
@@ -27,7 +27,12 @@ import (
 	configapi "sigs.k8s.io/gateway-api-inference-extension/api/config/v1alpha1"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/plugins"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/framework"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/framework/plugins/filter"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/framework/plugins/multi/prefix"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/framework/plugins/picker"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/framework/plugins/profile"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling/types"
+	"sigs.k8s.io/gateway-api-inference-extension/test/utils"
 )
 
 const (
@@ -50,21 +55,21 @@ func TestLoadConfiguration(t *testing.T) {
 		Plugins: []configapi.PluginSpec{
 			{
 				Name:       "test1",
-				PluginName: test1Type,
+				Type:       test1Type,
 				Parameters: json.RawMessage("{\"threshold\":10}"),
 			},
 			{
-				Name:       "profileHandler",
-				PluginName: "test-profile-handler",
+				Name: "profileHandler",
+				Type: "test-profile-handler",
 			},
 			{
 				Name:       test2Type,
-				PluginName: test2Type,
+				Type:       test2Type,
 				Parameters: json.RawMessage("{\"hashBlockSize\":32}"),
 			},
 			{
-				Name:       "testPicker",
-				PluginName: testPickerType,
+				Name: "testPicker",
+				Type: testPickerType,
 			},
 		},
 		SchedulingProfiles: []configapi.SchedulingProfile{
@@ -155,12 +160,6 @@ func TestLoadConfiguration(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:       "errorBadProfilePluginName",
-			configText: errorBadProfilePluginNameText,
-			configFile: "",
-			wantErr:    true,
-		},
-		{
 			name:       "errorDuplicatePlugin",
 			configText: errorDuplicatePluginText,
 			configFile: "",
@@ -175,14 +174,14 @@ func TestLoadConfiguration(t *testing.T) {
 		{
 			name:       "successFromFile",
 			configText: "",
-			configFile: "../../../../test/testdata/configloader_1_test.yaml",
+			configFile: "../../../../../test/testdata/configloader_1_test.yaml",
 			want:       goodConfig,
 			wantErr:    false,
 		},
 		{
 			name:       "noSuchFile",
 			configText: "",
-			configFile: "../../../../test/testdata/configloader_error_test.yaml",
+			configFile: "../../../../../test/testdata/configloader_error_test.yaml",
 			wantErr:    true,
 		},
 	}
@@ -210,14 +209,15 @@ func TestLoadPluginReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig returned unexpected error: %v", err)
 	}
-	references, err := LoadPluginReferences(theConfig.Plugins, testHandle{})
+	handle := utils.NewTestHandle()
+	err = LoadPluginReferences(theConfig.Plugins, handle)
 	if err != nil {
 		t.Fatalf("LoadPluginReferences returned unexpected error: %v", err)
 	}
-	if len(references) == 0 {
+	if len(handle.Plugins().GetAllPlugins()) == 0 {
 		t.Fatalf("LoadPluginReferences returned an empty set of references")
 	}
-	if t1, ok := references["test1"]; !ok {
+	if t1 := handle.Plugins().Plugin("test1"); t1 == nil {
 		t.Fatalf("LoadPluginReferences returned references did not contain test1")
 	} else if _, ok := t1.(*test1); !ok {
 		t.Fatalf("LoadPluginReferences returned references value for test1 has the wrong type %#v", t1)
@@ -227,41 +227,121 @@ func TestLoadPluginReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig returned unexpected error: %v", err)
 	}
-	_, err = LoadPluginReferences(theConfig.Plugins, testHandle{})
+	err = LoadPluginReferences(theConfig.Plugins, utils.NewTestHandle())
 	if err == nil {
 		t.Fatalf("LoadPluginReferences did not return the expected error")
 	}
 }
 
 func TestInstantiatePlugin(t *testing.T) {
-	plugSpec := configapi.PluginSpec{PluginName: "plover"}
-	_, err := InstantiatePlugin(plugSpec, testHandle{})
+	plugSpec := configapi.PluginSpec{Type: "plover"}
+	_, err := instantiatePlugin(plugSpec, utils.NewTestHandle())
 	if err == nil {
 		t.Fatalf("InstantiatePlugin did not return the expected error")
 	}
 }
 
-type testHandle struct {
+func TestLoadSchedulerConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		configText string
+		wantErr    bool
+	}{
+		{
+			name:       "schedulerSuccess",
+			configText: successSchedulerConfigText,
+			wantErr:    false,
+		},
+		{
+			name:       "errorBadPluginJson",
+			configText: errorBadPluginJsonText,
+			wantErr:    true,
+		},
+		{
+			name:       "errorBadReferenceNoWeight",
+			configText: errorBadReferenceNoWeightText,
+			wantErr:    true,
+		},
+		{
+			name:       "errorTwoPickers",
+			configText: errorTwoPickersText,
+			wantErr:    true,
+		},
+		{
+			name:       "errorConfig",
+			configText: errorConfigText,
+			wantErr:    true,
+		},
+		{
+			name:       "errorTwoProfileHandlers",
+			configText: errorTwoProfileHandlersText,
+			wantErr:    true,
+		},
+		{
+			name:       "errorNoProfileHandlers",
+			configText: errorNoProfileHandlersText,
+			wantErr:    true,
+		},
+	}
+
+	registerNeededPlgugins()
+
+	for _, test := range tests {
+		theConfig, err := LoadConfig([]byte(test.configText), "")
+		if err != nil {
+			if test.wantErr {
+				continue
+			}
+			t.Fatalf("LoadConfig returned unexpected error: %v", err)
+		}
+		handle := utils.NewTestHandle()
+		err = LoadPluginReferences(theConfig.Plugins, handle)
+		if err != nil {
+			if test.wantErr {
+				continue
+			}
+			t.Fatalf("LoadPluginReferences returned unexpected error: %v", err)
+		}
+
+		_, err = LoadSchedulerConfig(theConfig.SchedulingProfiles, handle)
+		if err != nil {
+			if !test.wantErr {
+				t.Errorf("LoadSchedulerConfig returned an unexpected error. error %v", err)
+			}
+		} else if test.wantErr {
+			t.Errorf("LoadSchedulerConfig did not return an expected error (%s)", test.name)
+		}
+	}
+}
+
+func registerNeededPlgugins() {
+	plugins.Register(filter.LowQueueFilterType, filter.LowQueueFilterFactory)
+	plugins.Register(prefix.PrefixCachePluginType, prefix.PrefixCachePluginFactory)
+	plugins.Register(picker.MaxScorePickerType, picker.MaxScorePickerFactory)
+	plugins.Register(picker.RandomPickerType, picker.RandomPickerFactory)
+	plugins.Register(profile.SingleProfileHandlerType, profile.SingleProfileHandlerFactory)
 }
 
 // The following multi-line string constants, cause false positive lint errors (dupword)
 
+// valid configuration
+//
 //nolint:dupword
 const successConfigText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 - name: profileHandler
-  pluginName: test-profile-handler
-- pluginName: test-two
+  type: test-profile-handler
+- type: test-two
   parameters:
     hashBlockSize: 32
 - name: testPicker
-  pluginName: test-picker
+  type: test-picker
 schedulingProfiles:
 - name: default
   plugins:
@@ -271,6 +351,8 @@ schedulingProfiles:
   - pluginRef: testPicker
 `
 
+// YAML does not follow expected structure of config
+//
 //nolint:dupword
 const errorBadYamlText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
@@ -279,6 +361,8 @@ plugins:
 - testing 1 2 3
 `
 
+// missing required Plugin type
+//
 //nolint:dupword
 const errorBadPluginReferenceText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
@@ -288,165 +372,173 @@ plugins:
     a: 1234
 `
 
+// plugin type does not exist
+//
 //nolint:dupword
 const errorBadPluginReferencePluginText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: testx
-  pluginName: test-x
+  type: test-x
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 `
 
+// missing required profile handler
+//
 //nolint:dupword
 const errorNoProfileHandlerText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 schedulingProfiles:
 - name: default
 `
 
+// missing scheduling profiles
+//
 //nolint:dupword
 const errorNoProfilesText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 `
 
+// missing required scheduling profile name
+//
 //nolint:dupword
 const errorNoProfileNameText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - plugins:
   - pluginRef: test1
 `
 
+// missing plugins in scheduling profile
+//
 //nolint:dupword
 const errorNoProfilePluginsText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - name: default
 `
 
+// missing required plugin reference name, only weight is provided
+//
 //nolint:dupword
 const errorBadProfilePluginText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - name: default
   plugins:
   - weight: 10
 `
 
+// reference a non-existent plugin
+//
 //nolint:dupword
 const errorBadProfilePluginRefText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - name: default
   plugins:
   - pluginRef: plover
 `
 
-//nolint:dupword
-const errorBadProfilePluginNameText = `
-apiVersion: inference.networking.x-k8s.io/v1alpha1
-kind: EndpointPickerConfig
-plugins:
-- pluginName: test-profile-handler
-schedulingProfiles:
-- name: default
-  plugins:
-  - pluginRef: plover
-`
-
+// invalid parameters (string provided where int is expected)
+//
 //nolint:dupword
 const errorBadPluginReferenceParametersText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: asdf
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - name: default
   plugins:
   - pluginRef: test1
 `
 
+// duplicate names in plugin list
+//
 //nolint:dupword
 const errorDuplicatePluginText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 20
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - name: default
   plugins:
   - pluginRef: test1
 `
 
+// duplicate scheduling profile name
+//
 //nolint:dupword
 const errorDuplicateProfileText = `
 apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - name: test1
-  pluginName: test-one
+  type: test-one
   parameters:
     threshold: 10
 - name: test2
   pluginName: test-one
-  parameters:
+  type:
     threshold: 20
 - name: profileHandler
-  pluginName: test-profile-handler
+  type: test-profile-handler
 schedulingProfiles:
 - name: default
   plugins:
@@ -467,6 +559,10 @@ func (f *test1) Type() string {
 	return test1Type
 }
 
+func (f *test1) Name() string {
+	return "test-1"
+}
+
 // Filter filters out pods that doesn't meet the filter criteria.
 func (f *test1) Filter(_ context.Context, _ *types.CycleState, _ *types.LLMRequest, pods []types.Pod) []types.Pod {
 	return pods
@@ -480,6 +576,10 @@ type test2 struct{}
 
 func (f *test2) Type() string {
 	return test2Type
+}
+
+func (f *test2) Name() string {
+	return "test-2"
 }
 
 func (m *test2) Score(_ context.Context, _ *types.CycleState, _ *types.LLMRequest, _ []types.Pod) map[types.Pod]float64 {
@@ -497,6 +597,10 @@ func (p *testPicker) Type() string {
 	return testPickerType
 }
 
+func (p *testPicker) Name() string {
+	return "test-picker"
+}
+
 func (p *testPicker) Pick(_ context.Context, _ *types.CycleState, _ []*types.ScoredPod) *types.ProfileRunResult {
 	return nil
 }
@@ -508,6 +612,10 @@ type testProfileHandler struct{}
 
 func (p *testProfileHandler) Type() string {
 	return testProfileHandlerType
+}
+
+func (p *testProfileHandler) Name() string {
+	return "test-profile-handler"
 }
 
 func (p *testProfileHandler) Pick(_ context.Context, _ *types.CycleState, _ *types.LLMRequest, _ map[string]*framework.SchedulerProfile, _ map[string]*types.ProfileRunResult) map[string]*framework.SchedulerProfile {
@@ -545,3 +653,137 @@ func registerTestPlugins() {
 		},
 	)
 }
+
+// valid configuration
+//
+//nolint:dupword
+const successSchedulerConfigText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name: lowQueue
+  type: low-queue
+  parameters:
+    threshold: 10
+- name: prefixCache
+  type: prefix-cache
+  parameters:
+    hashBlockSize: 32
+- name: maxScore
+  type: max-score
+- name: profileHandler
+  type: single-profile
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: lowQueue
+  - pluginRef: prefixCache
+    weight: 50
+  - pluginRef: maxScore
+`
+
+// invalid parameter configuration for plugin (string passed, in expected)
+//
+//nolint:dupword
+const errorBadPluginJsonText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name:profileHandler
+  type: single-profile
+- name: prefixCache
+  type: prefix-cache
+  parameters:
+    hashBlockSize: asdf
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: prefixCache
+    weight: 50
+`
+
+// missing weight for scorer
+//
+//nolint:dupword
+const errorBadReferenceNoWeightText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name: profileHandler
+  type: single-profile
+- name: prefixCache
+  type: prefix-cache
+  parameters:
+    hashBlockSize: 32
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: prefixCache
+`
+
+// multiple pickers in scheduling profile
+//
+//nolint:dupword
+const errorTwoPickersText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name: profileHandler
+  type: single-profile
+- name: maxScore
+  type: max-score
+- name: random
+  type: random
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: maxScore
+  - pluginRef: random
+`
+
+// missing required scheduling profile
+//
+//nolint:dupword
+const errorConfigText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name: lowQueue
+  pluginName: low-queue
+  parameters:
+    threshold: 10
+`
+
+// multiple profile handlers when only one is allowed
+//
+//nolint:dupword
+const errorTwoProfileHandlersText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name: profileHandler
+  type: single-profile
+- name: secondProfileHandler
+  type: single-profile
+- name: maxScore
+  type: max-score
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: maxScore
+`
+
+// missing required profile handler
+//
+//nolint:dupword
+const errorNoProfileHandlersText = `
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- name: maxScore
+  type: max-score
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: maxScore
+`
